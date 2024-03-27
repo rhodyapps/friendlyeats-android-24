@@ -2,16 +2,13 @@ package com.google.firebase.example.fireeats
 
 import android.app.Activity
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.Menu
-import android.view.MenuInflater
-import android.view.MenuItem
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Toast
+import android.util.Log
+import android.view.*
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.core.text.HtmlCompat
+import androidx.core.view.MenuHost
+import androidx.core.view.MenuProvider
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.fragment.findNavController
@@ -22,9 +19,15 @@ import com.firebase.ui.auth.FirebaseAuthUIActivityResultContract
 import com.firebase.ui.auth.data.model.FirebaseAuthUIAuthenticationResult
 import com.google.android.material.snackbar.Snackbar
 import com.google.firebase.auth.ktx.auth
-import com.google.firebase.example.fireeats.databinding.FragmentMainBinding
+import com.google.firebase.example.fireeats.FilterDialogFragment
+import com.google.firebase.example.fireeats.Filters
+import com.google.firebase.example.fireeats.MainFragmentDirections
+import com.google.firebase.example.fireeats.R
 import com.google.firebase.example.fireeats.adapter.RestaurantAdapter
+import com.google.firebase.example.fireeats.databinding.FragmentMainBinding
 import com.google.firebase.example.fireeats.model.Restaurant
+import com.google.firebase.example.fireeats.util.RatingUtil
+import com.google.firebase.example.fireeats.util.RestaurantUtil
 import com.google.firebase.example.fireeats.viewmodel.MainActivityViewModel
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
@@ -35,26 +38,19 @@ import com.google.firebase.ktx.Firebase
 
 class MainFragment : Fragment(),
     FilterDialogFragment.FilterListener,
-    RestaurantAdapter.OnRestaurantSelectedListener {
+    RestaurantAdapter.OnRestaurantSelectedListener,
+    MenuProvider {
 
     lateinit var firestore: FirebaseFirestore
-    private var query: Query? = null
+    lateinit var query: Query
 
     private lateinit var binding: FragmentMainBinding
     private lateinit var filterDialog: FilterDialogFragment
-    private var adapter: RestaurantAdapter? = null
+    lateinit var adapter: RestaurantAdapter
 
     private lateinit var viewModel: MainActivityViewModel
-    private val signInLauncher = registerForActivityResult(
-        FirebaseAuthUIActivityResultContract()
-    ) { result -> this.onSignInResult(result) }
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        setHasOptionsMenu(true)
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         binding = FragmentMainBinding.inflate(inflater, container, false);
         return binding.root;
     }
@@ -71,32 +67,37 @@ class MainFragment : Fragment(),
         // Firestore
         firestore = Firebase.firestore
 
-        // RecyclerView
-        query?.let {
-            adapter = object : RestaurantAdapter(it, this@MainFragment) {
-                override fun onDataChanged() {
-                    // Show/hide content if the query returns empty.
-                    if (itemCount == 0) {
-                        binding.recyclerRestaurants.visibility = View.GONE
-                        binding.viewEmpty.visibility = View.VISIBLE
-                    } else {
-                        binding.recyclerRestaurants.visibility = View.VISIBLE
-                        binding.viewEmpty.visibility = View.GONE
-                    }
-                }
+        // Get ${LIMIT} restaurants
+        query = firestore.collection("restaurants")
+            .orderBy("avgRating", Query.Direction.DESCENDING)
+            .limit(LIMIT.toLong())
 
-                override fun onError(e: FirebaseFirestoreException) {
-                    // Show a snackbar on errors
-                    Snackbar.make(
-                        binding.root,
-                        "Error: check logs for info.", Snackbar.LENGTH_LONG
-                    ).show()
+        // RecyclerView
+        adapter = object : RestaurantAdapter(query, this@MainFragment) {
+            override fun onDataChanged() {
+                // Show/hide content if the query returns empty.
+                if (itemCount == 0) {
+                    binding.recyclerRestaurants.visibility = View.GONE
+                    binding.viewEmpty.visibility = View.VISIBLE
+                } else {
+                    binding.recyclerRestaurants.visibility = View.VISIBLE
+                    binding.viewEmpty.visibility = View.GONE
                 }
             }
-            binding.recyclerRestaurants.adapter = adapter
+
+            override fun onError(e: FirebaseFirestoreException) {
+                // Show a snackbar on errors
+                Snackbar.make(binding.root,
+                    "Error: check logs for info.", Snackbar.LENGTH_LONG).show()
+            }
         }
 
+        // MenuProvider
+        val menuHost: MenuHost = requireActivity() as MenuHost
+        menuHost.addMenuProvider(this)
+
         binding.recyclerRestaurants.layoutManager = LinearLayoutManager(context)
+        binding.recyclerRestaurants.adapter = adapter
 
         // Filter Dialog
         filterDialog = FilterDialogFragment()
@@ -105,7 +106,7 @@ class MainFragment : Fragment(),
         binding.buttonClearFilter.setOnClickListener { onClearFilterClicked() }
     }
 
-    override fun onStart() {
+    public override fun onStart() {
         super.onStart()
 
         // Start sign in if necessary
@@ -118,28 +119,31 @@ class MainFragment : Fragment(),
         onFilter(viewModel.filters)
 
         // Start listening for Firestore updates
-        adapter?.startListening()
+        adapter.startListening()
     }
 
-    override fun onStop() {
+    public override fun onStop() {
         super.onStop()
-        adapter?.stopListening()
+        adapter.stopListening()
     }
 
-    override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
-        inflater.inflate(R.menu.menu_main, menu)
-        return super.onCreateOptionsMenu(menu, inflater)
+    override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+        menuInflater.inflate(R.menu.menu_main, menu)
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            R.id.menu_add_items -> onAddItemsClicked()
+    override fun onMenuItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.menu_add_items -> {
+                onAddItemsClicked()
+                true
+            }
             R.id.menu_sign_out -> {
                 AuthUI.getInstance().signOut(requireContext())
                 startSignIn()
+                true
             }
+            else -> false
         }
-        return super.onOptionsItemSelected(item)
     }
 
     private fun onSignInResult(result: FirebaseAuthUIAuthenticationResult) {
@@ -178,13 +182,38 @@ class MainFragment : Fragment(),
     }
 
     override fun onFilter(filters: Filters) {
-        // TODO(developer): Construct new query
+        // Construct query basic query
+        var query: Query = firestore.collection("restaurants")
+
+        // Category (equality filter)
+        if (filters.hasCategory()) {
+            query = query.whereEqualTo(Restaurant.FIELD_CATEGORY, filters.category)
+        }
+
+        // City (equality filter)
+        if (filters.hasCity()) {
+            query = query.whereEqualTo(Restaurant.FIELD_CITY, filters.city)
+        }
+
+        // Price (equality filter)
+        if (filters.hasPrice()) {
+            query = query.whereEqualTo(Restaurant.FIELD_PRICE, filters.price)
+        }
+
+        // Sort by (orderBy with direction)
+        if (filters.hasSortBy()) {
+            query = query.orderBy(filters.sortBy.toString(), filters.sortDirection)
+        }
+
+        // Limit items
+        query = query.limit(LIMIT.toLong())
+
+        // Update the query
+        adapter.setQuery(query)
 
         // Set header
-        binding.textCurrentSearch.text = HtmlCompat.fromHtml(
-            filters.getSearchDescription(requireContext()),
-            HtmlCompat.FROM_HTML_MODE_LEGACY
-        )
+        binding.textCurrentSearch.text = HtmlCompat.fromHtml(filters.getSearchDescription(requireContext()),
+            HtmlCompat.FROM_HTML_MODE_LEGACY)
         binding.textCurrentSortBy.text = filters.getOrderDescription(requireContext())
 
         // Save filters
@@ -197,18 +226,46 @@ class MainFragment : Fragment(),
 
     private fun startSignIn() {
         // Sign in with FirebaseUI
+        val signInLauncher = requireActivity().registerForActivityResult(
+            FirebaseAuthUIActivityResultContract()
+        ) { result -> this.onSignInResult(result)}
+
         val intent = AuthUI.getInstance().createSignInIntentBuilder()
-                .setAvailableProviders(listOf(AuthUI.IdpConfig.EmailBuilder().build()))
-                .setIsSmartLockEnabled(false)
-                .build()
+            .setAvailableProviders(listOf(AuthUI.IdpConfig.EmailBuilder().build()))
+            .setIsSmartLockEnabled(false)
+            .build()
 
         signInLauncher.launch(intent)
         viewModel.isSigningIn = true
     }
 
     private fun onAddItemsClicked() {
-        // TODO(developer): Add random restaurants
-        showTodoToast()
+        // Add a bunch of random restaurants
+        val batch = firestore.batch()
+        for (i in 0..9) {
+            val restRef = firestore.collection("restaurants").document()
+
+            // Create random restaurant / ratings
+            val randomRestaurant = RestaurantUtil.getRandom(requireContext())
+            val randomRatings = RatingUtil.getRandomList(randomRestaurant.numRatings)
+            randomRestaurant.avgRating = RatingUtil.getAverageRating(randomRatings)
+
+            // Add restaurant
+            batch.set(restRef, randomRestaurant)
+
+            // Add ratings to subcollection
+            for (rating in randomRatings) {
+                batch.set(restRef.collection("ratings").document(), rating)
+            }
+        }
+
+        batch.commit().addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                Log.d(TAG, "Write batch succeeded.")
+            } else {
+                Log.w(TAG, "write batch failed.", task.exception)
+            }
+        }
     }
 
     private fun showSignInErrorDialog(@StringRes message: Int) {
@@ -220,10 +277,6 @@ class MainFragment : Fragment(),
             .setNegativeButton(R.string.option_exit) { _, _ -> requireActivity().finish() }.create()
 
         dialog.show()
-    }
-
-    private fun showTodoToast() {
-        Toast.makeText(context, "TODO: Implement", Toast.LENGTH_SHORT).show()
     }
 
     companion object {
