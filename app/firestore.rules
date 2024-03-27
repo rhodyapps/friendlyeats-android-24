@@ -33,11 +33,11 @@ service cloud.firestore {
         allow read: if request.auth != null;
 
         // Any signed-in user can create if their uid matches the document
-        allow create: if request.auth != null
-                      && request.resource.data.userId == request.auth.uid;
+        allow create: if request.auth != null;
+                     // && request.resource.data.userId == request.auth.uid;
 
         // Deletes and updates are not allowed (default)
-        allow update, delete: if false;
+        allow delete: if false;
       }
     }
   }
